@@ -90,7 +90,6 @@ def get_pages_for_tag(tag):
 
 # Generate path to save the file
 def get_path(tag = False, filename = False, thumbnail = False):
-
     # Use two levels of directories, just for, eh, scalability
     #m = re.match('^(.)(.)',tag)
     #a = m.group(1)
@@ -98,7 +97,11 @@ def get_path(tag = False, filename = False, thumbnail = False):
 
     # Make sure the filename is safe
     if filename:
-        filename = werkzeug.utils.secure_filename(filename)
+        try:
+            filename = werkzeug.utils.secure_filename(filename)
+        except:
+            log("DEBUG","Unable to secure filename %s" % (filename))
+            return False
 
     if thumbnail == True:
         path = '%s/%s' % (app.config['THUMBNAIL_DIRECTORY'],tag)
@@ -106,14 +109,13 @@ def get_path(tag = False, filename = False, thumbnail = False):
         if filename:
             #path = '%s/%s-thumb.jpg' % (path,filename)
             path = '%s/%s' % (path,filename)
-
     else:
         path = '%s/%s' % (app.config['FILE_DIRECTORY'],tag)
 
         if filename:
             path = '%s/%s' % (path,filename)
 
-    return str(path)
+    return path
 
 # Function to calculate the md5 checksum for a file on the local file system
 def md5_for_file(target):
@@ -220,31 +222,43 @@ def get_files_in_tag(tag, page = False, per_page = app.config['FILES_PER_PAGE'])
         else:
             skip = (int(page)-1) * per_page
             cursor = col.find({'tag' : tag},skip = skip, limit = per_page, sort = [('captured',1),('filename',1)])
-
     except:
+        log("DEBUG","%s: Unable to find files in tag in the database." % (tag))
         cursor = False
 
     if cursor:
         for f in cursor:
-            filename = f['filename']
             i = {}
-            i['filename'] = f['filename']
-            #i['downloads'] = int(f['downloads'])
-            i['mimetype'] = f['mimetype']
+            if 'filename' in f:
+                i['filename'] = f['filename']
+
+            if 'mimetype' in f:
+                i['mimetype'] = f['mimetype']
 
             if 'md5sum' in f:
                 i['md5'] = f['md5sum']
+
             if 'checksum' in f:
                 i['md5'] = f['checksum']
 
-            i['filepath'] = get_path(tag,filename)
-            i['size_bytes'] = f['size']
+            if 'size' in f:
+                i['size_bytes'] = f['size']
+
+            if 'uploaded' in f:
+                i['uploaded'] = f['uploaded']
+
+            if 'client' in f:
+                i['client'] = f['client']
+
+            i['filepath'] = get_path(tag,f['filename'])
             i['size'] = "%.2f" % (f['size'] / 1024 / round(1024))
-            #i['bandwidth'] = "%.2f" % ((f['downloads'] * f['size']) / 1024 / round(1024))
-            i['uploaded'] = f['uploaded']
-            i['client'] = f['client']
-            i['uploaded_iso'] = datetime.datetime.strptime(str(f['uploaded']), \
-                                    "%Y%m%d%H%M%S")
+
+            if 'uploaded' in f:
+                try:
+                    i['uploaded_iso'] = datetime.datetime.strptime(str(f['uploaded']), \
+                        "%Y%m%d%H%M%S")
+                except:
+                    pass
 
             if 'captured' in f:
                 try:
@@ -256,13 +270,12 @@ def get_files_in_tag(tag, page = False, per_page = app.config['FILES_PER_PAGE'])
             # Add thumbnail path if the tag should show thumbnails and the
             # thumbnail for this filename exists.
             if conf['preview'] == 'on':
-                thumbfile = get_path(tag,filename,True)
+                thumbfile = get_path(tag,f['filename'],True)
                 if os.path.exists(thumbfile):
                     i['thumbnail'] = True
 
             #files[filename] = i 
             files.append(i)
-
     return files
 
 def get_header(header):
@@ -388,7 +401,15 @@ def generate_thumbnails(tag):
 
     thumbnail_dir = get_path(tag, thumbnail = True)
     if not os.path.exists(thumbnail_dir):
-        os.makedirs(thumbnail_dir)
+        try:
+            os.makedirs(thumbnail_dir)
+        except:
+            log("ERROR","An error occurred when trying to create directory " \
+                "%s for tag %s" % (thumbnail_dir,tag))
+        else:
+            log("DEBUG","Directory %s for tag %s was successfully created." \
+                 % (thumbnail_dir,tag))
+
         if not os.path.exists(thumbnail_dir):
             log("ERROR","Unable to create directory %s for tag %s" % \
                 (thumbnail_dir,tag))
@@ -401,11 +422,10 @@ def generate_thumbnails(tag):
 
         try:
             mimetype = f['mimetype']
-
         except:
             log("DEBUG","Unable to read mimetype for tag %s, filename %s" \
                 % (tag, filename))
-
+            return False
         else:
             if mimetype:
                 if m.match(mimetype):
@@ -420,11 +440,13 @@ def generate_thumbnails(tag):
                             % (thumbfile,filepath))
 
                         try:
-                            im = PythonMagick.Image(filepath)
-                        except:
+                            im = PythonMagick.Image(str(filepath))
+                        except Exception as e:
                             log("ERROR","Unable to load file %s in tag %s " \
-                                "with mimetype %s to generate thumbnail image" \
-                                % (filename,tag,mimetype))
+                                "with mimetype %s to generate thumbnail " \
+                                "image: %s" \
+                                % (filepath,tag,mimetype,e))
+                            return False
                         else:
                             try:
                                 im.scale('%dx%d' % ( \
@@ -435,6 +457,7 @@ def generate_thumbnails(tag):
                                     "tag %s with mimetype %s to generate " \
                                     "thumbnail image" \
                                     % (filename,tag,mimetype))
+                                return False
                             else:
                                 try:
                                     im.write(str(thumbfile))
@@ -444,10 +467,12 @@ def generate_thumbnails(tag):
                                         "tag %s with mimetype %s to %s " \
                                         % (filename,tag,mimetype, \
                                         str(thumbfile)))
+                                    return False
                                 else:
                                     log("INFO","Generated thumbnail for " \
                                         "file %s in tag %s with mimetype %s" \
                                         % (filename,tag,mimetype))
+    return True
 
 def get_tag_lifetime(tag):
     days = False
@@ -854,13 +879,16 @@ def clean_log():
     days = int(app.config['NUMBER_OF_DAYS_TO_KEEP_LOGS'])
     dt = datetime.datetime.now() - datetime.timedelta(days = days)
 
-    d =  {
-             'time' : {
-                 '$lt' : int(dt.strftime("%Y%m%d%H%M%S"))
+    try:
+        d =  {
+                 'time' : {
+                     '$lt' : int(dt.strftime("%Y%m%d%H%M%S"))
+                 }
              }
-         }
 
-    col.remove(d)
+        col.remove(d)
+    except:
+        log("ERROR","Unable to clean the database log.")
 
 def dblog(description,client = False,tag = False,filename = False):
     referer = get_header('referer')
@@ -1467,9 +1495,13 @@ def tag_html(tag,page):
 
     try:
         valid_days = get_tag_lifetime(tag)
-
     except:
         valid_days = False
+
+    #h = werkzeug.Headers()
+    ##h.add('Content-Disposition', 'inline' % (tag))
+    #h.add('cache-control', 'max-age=7200, must-revalidate')
+    #return flask.Response({}, mimetype='text/json', headers = h)
 
     response = flask.make_response(flask.render_template("tag.html", \
         tag = tag, files = files, conf = conf, num_files = num_files, \
@@ -1477,7 +1509,7 @@ def tag_html(tag,page):
         datetime_found = datetime_found, \
         title = "Tag %s" % (tag)))
 
-    response.headers['cache-control'] = 'max-age=3600, must-revalidate'
+    response.headers['cache-control'] = 'max-age=300, must-revalidate'
     return response
 
 def tag_playlist(tag):
@@ -1717,8 +1749,12 @@ def admin_configuration(tag,key):
 @app.route("/archive/<tag>")
 def archive(tag):
     client = get_client()
-    def stream_archive(files_to_archive):
-        command = "/usr/bin/zip -j - %s" % (" ".join(files_to_archive))
+    def stream_archive(tag):
+        log_prefix = '%s archive' % (tag)
+        tag_path = get_path(tag)
+        log("INFO","%s: Streaming directory %s" % (log_prefix, tag_path))
+
+        command = "/usr/bin/zip -j - %s/*" % (tag_path)
         p = subprocess.Popen(command, stdout=subprocess.PIPE, shell = True, close_fds = True)
         f = fcntl.fcntl(p.stdout, fcntl.F_GETFL)
 
@@ -1746,18 +1782,10 @@ def archive(tag):
     log_prefix = '%s archive -> %s' % (tag,client)
     log("INFO","%s: Archive download request received" % (log_prefix))
 
-    files = get_files_in_tag(tag)
-    files_to_archive = []
-    for f in files:
-        filepath = get_path(tag,f['filename'])
-        files_to_archive.append(filepath)
-        #log("INFO","Zip tag %s, file path %s" % (tag,filepath))
-
     h = werkzeug.Headers()
-    #h.add('Content-Length', '314572800')
     h.add('Content-Disposition', 'attachment; filename=%s.zip' % (tag))
     h.add('cache-control', 'max-age=7200, must-revalidate')
-    return flask.Response(stream_archive(files_to_archive), mimetype='application/zip', headers = h, direct_passthrough = True)
+    return flask.Response(stream_archive(tag), mimetype='application/zip', headers = h, direct_passthrough = True)
 
 @app.route("/upload/<tag>/")
 @app.route("/upload/<tag>")
@@ -1854,14 +1882,16 @@ def callback_upload():
     log("INFO","Callback received [%s]." % (i))
  
     # The input values are to be trusted at this point
+    # New flask.request from client
+    log_prefix = '%s -> %s/%s' % (i['client'],i['tag'],i['filename'])
+
     conf = get_tag_configuration(i['tag'])
     if conf:
         # The tag is read only
         if conf['permission'] != 'rw':
+            log("DEBUG","%s: The tag is read only, aborting." % log_prefix)
             flask.abort(401)
 
-    # New flask.request from client
-    log_prefix = '%s -> %s/%s' % (i['client'],i['tag'],i['filename'])
     log("INFO","%s: Upload request received, the file size is %d bytes. User " \
         "agent: %s" % (log_prefix,i['reported_size'],i['useragent']))
 
@@ -1889,22 +1919,24 @@ def callback_upload():
         log("DEBUG","%s: Checksum OK!" % (log_prefix))
 
     else:
-        log("DEBUG","%s: Checksum mismatch! (%s != %s)" % ( \
+        log("DEBUG","%s: Checksum mismatch! (%s != %s) (proper client side checksumming is not yet implemented)" % ( \
             log_prefix, i['reported_checksum'], i['checksum']))
         # TODO: Should abort here
 
     # Detect file type
     try:
         mimetype = get_mimetype(i['tempfile'])
-
     except:
         log("DEBUG","%s: Unable to detect mime type on %s" % \
             (log_prefix, i['tempfile']))
-
     else:
-        i['mimetype'] = mimetype
-        log("DEBUG","%s: Detected mime type %s on %s" % \
-            (log_prefix, mimetype, i['tempfile']))
+        if mimetype:
+            i['mimetype'] = mimetype
+            log("DEBUG","%s: Detected mime type %s on %s" % \
+                (log_prefix, mimetype, i['tempfile']))
+        else:
+            log("DEBUG","%s: No mime type found in %s" % \
+                (log_prefix, i['tempfile']))
 
     captured = False
     if mimetype:
@@ -1915,7 +1947,6 @@ def callback_upload():
              if captured_dt:
                  try:
                      captured = int(captured_dt.strftime("%Y%m%d%H%M%S"))
-
                  except:
                      captured = captured_dt
 
@@ -1923,13 +1954,18 @@ def callback_upload():
         i['captured'] = captured
         log("DEBUG","%s: Captured at %s" % (log_prefix, captured))
 
+    if os.path.exists(i['tempfile']):
+        log("DEBUG","%s: The temp file %s exists locally" % \
+            (log_prefix,i['tempfile']))
+    else:
+        log("ERROR","%s: The temp file %s does not exist locally" % \
+            (log_prefix,i['tempfile']))
+
     try:
         stat = os.stat(i['tempfile'])
-
     except:
         log("ERROR","%s: Unable to read size of temp file" % ( \
             log_prefix,i['tempfile']))
-
     else:
         i['size'] = int(stat.st_size)
 
@@ -1939,7 +1975,12 @@ def callback_upload():
                 (log_prefix,i['tempfile']))
             flask.abort(400)
 
-        if i['size'] != i['reported_size']:
+        # Verify that the file size is equal to the one reported by the client
+        # before uploading.
+        if i['size'] == i['reported_size']:
+            log("DEBUG","%s: The uploaded file (%s) size is correct (%d bytes)." % \
+                (log_prefix,i['tempfile'],i['size']))
+        else:
             log("ERROR","%s: The uploaded file %s was %d bytes, but should " \
                 "have been %d bytes. Aborting." % \
                 (log_prefix,i['tempfile'],i['size'],i['reported_size']))

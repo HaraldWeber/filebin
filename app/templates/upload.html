@@ -40,7 +40,7 @@
           if (counter_completed == counter_queue) {
               fileCount.textContent = text + ", all done!";
         } else {
-              fileCount.textContent = text + ", please wait ...";
+              fileCount.textContent = text + ".";
         }
       }
 
@@ -208,14 +208,15 @@
               var lastLoaded = 0;
               var lastTime = (new Date()).getTime();
               var timeStarted = lastTime;
+              var show_eta = 0;
               var etaStr = "";
               var xhr = new XMLHttpRequest(),
                   upload = xhr.upload;
 
               printSpeed = function(speed) {
-                var unit = " kb/s ";
+                var unit = " KB/s";
                 if (speed >= 1024) {
-                  unit = " Mb/s ";
+                  unit = " MB/s";
                   speed /=1024;
                 }
                 return (speed.toFixed(1) + unit);
@@ -233,13 +234,24 @@
                               var speed = (ev.loaded - lastLoaded) / (curTime - lastTime);
                               lastTime = curTime;
                               lastLoaded = ev.loaded;
-                              if (curTime - timeStarted > 180000) {
-                                // show eta if upload lasts long
-                                var timeToComplete = (curTime - timeStarted) * (ev.total / ev.loaded);
-                                etaStr = " ETA: " +(new Date(curTime + timeToComplete)).toUTCString();
+
+                              elapsed = curTime - timeStarted;
+                              percent_done = (ev.loaded / ev.total) * 100;
+                              ratio = 100 / percent_done;
+                              total_time = ratio * elapsed;
+
+                              // Decide if ETA should be shown or not.
+                              if (elapsed > 5000 && total_time > 180000 && show_eta == 0) {
+                                  show_eta = 1;
+                              }
+
+                              // Generate ETA text, if ETA should be shown.
+                              if (show_eta == 1) {
+                                  eta = (new Date(timeStarted + total_time)).toLocaleTimeString();
+                                  etaStr = "ETA " + eta + ". ";
                               } 
 
-                              ps[i].textContent = "Uploading at " + printSpeed(speed) + percent.toFixed(2) + "% " + etaStr;
+                              ps[i].textContent = percent.toFixed(2) + "% done. " + etaStr + "Uploading at " + printSpeed(speed) + ".";
                               ps[i].style["color"] = "#000000";
                               break;
                           }
